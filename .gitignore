@@ -1,1 +1,29 @@
+# Dependency directories
+node_modules/
+**/node_modules/
+
+# Production builds
+dist/
+**/dist/
+
+# Env config files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+**/.env*
+
+# Logs & temp files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+.stylelintcache
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Optional: Evaluation files (if you want to keep them local)
 /eval

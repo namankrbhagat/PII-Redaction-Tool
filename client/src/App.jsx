@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const BACKEND_URL = 'http://localhost:3001';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
 
 export default function App() {
   const [file, setFile] = useState(null);
@@ -12,14 +12,41 @@ export default function App() {
   const [redactedFileName, setRedactedFileName] = useState('');
   const [backendStatus, setBackendStatus] = useState('checking'); // checking | online | offline
 
-  // Check backend server connection on mount
+  // Check backend server connection on mount, with retries for Render cold start
   useEffect(() => {
-    fetch(`${BACKEND_URL}/health`)
-      .then(res => {
-        if (res.ok) setBackendStatus('online');
-        else setBackendStatus('offline');
-      })
-      .catch(() => setBackendStatus('offline'));
+    let retries = 0;
+    const maxRetries = 20; // 100 seconds total
+    let timeoutId;
+
+    const checkHealth = () => {
+      fetch(`${BACKEND_URL}/health`)
+        .then(res => {
+          if (res.ok) {
+            setBackendStatus('online');
+          } else {
+            retryConnection();
+          }
+        })
+        .catch(() => {
+          retryConnection();
+        });
+    };
+
+    const retryConnection = () => {
+      retries++;
+      if (retries < maxRetries) {
+        setBackendStatus('checking');
+        timeoutId = setTimeout(checkHealth, 5000);
+      } else {
+        setBackendStatus('offline');
+      }
+    };
+
+    checkHealth();
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, []);
 
   const handleDrag = (e) => {
@@ -296,6 +323,30 @@ export default function App() {
                     Download Again
                   </a>
                 )}
+              </div>
+            </div>
+          )}
+
+          {backendStatus === 'checking' && (
+            <div className="glass-panel" style={{ padding: '1.25rem', borderColor: 'rgba(245, 158, 11, 0.3)', background: 'rgba(245, 158, 11, 0.05)' }}>
+              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                <div className="spinner" style={{ borderTopColor: '#f59e0b' }} />
+                <div>
+                  <p style={{ fontWeight: '600', color: '#f59e0b' }}>Waking Up Redactor Engine</p>
+                  <p style={{ fontSize: '0.8rem', color: '#fcd34d' }}>The server is on a free Render instance. It takes 50-70 seconds to spin up from sleep. Please wait...</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {backendStatus === 'offline' && (
+            <div className="glass-panel" style={{ padding: '1.25rem', borderColor: 'rgba(239, 68, 68, 0.3)', background: 'rgba(239, 68, 68, 0.05)' }}>
+              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                <span style={{ fontSize: '1.5rem', color: '#ef4444' }}>🔴</span>
+                <div>
+                  <p style={{ fontWeight: '600', color: '#ef4444' }}>Redactor Engine Offline</p>
+                  <p style={{ fontSize: '0.8rem', color: '#f87171' }}>Could not establish connection to the backend server. Please verify the server is running and CORS is configured.</p>
+                </div>
               </div>
             </div>
           )}
