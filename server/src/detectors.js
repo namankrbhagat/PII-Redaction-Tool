@@ -1,6 +1,6 @@
 import nlp from 'compromise';
 
-// Regex patterns for structured PII
+// Regex patterns for structured PII (compiled once globally and reused by resetting lastIndex)
 const REGEX_PATTERNS = {
   email: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
   
@@ -19,6 +19,9 @@ const REGEX_PATTERNS = {
   // Indian GSTIN (2 digits, 5 letters, 4 digits, 1 letter, 1 digit, Z, 1 alphanumeric)
   gstin: /\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b/ig,
   
+  // Passport (Indian & general formats: e.g. 1 letter followed by 7 or 8 digits, or 9 digit numbers)
+  passport: /\b[A-Z][0-9]{7,8}\b|\b[0-9]{9}\b/ig,
+  
   // General Phone Number (handles US, Indian, and general international formats)
   phone: /(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{4}\b|\b(?:\+91[\-\s]?)?[6789]\d{9}\b/g
 };
@@ -34,36 +37,6 @@ const DATE_PATTERNS = [
 // Keywords indicating a date is a Date of Birth
 const DOB_KEYWORDS = ['born', 'birth', 'dob', 'd.o.b', 'date of birth', 'birthday', 'yob', 'year of birth'];
 
-/**
- * Scans text and extracts context-aware Date of Birth (DOB) strings.
- * @param {string} text - The input text
- * @returns {Set<string>} Set of DOB strings
- */
-function detectDOBs(text) {
-  const dobs = new Set();
-  
-  for (const regex of DATE_PATTERNS) {
-    let match;
-    // Reset regex index
-    regex.lastIndex = 0;
-    while ((match = regex.exec(text)) !== null) {
-      const dateString = match[0];
-      const matchIndex = match.index;
-      
-      // Look at the context window (30 chars before and 30 chars after the match)
-      const start = Math.max(0, matchIndex - 30);
-      const end = Math.min(text.length, matchIndex + dateString.length + 30);
-      const context = text.slice(start, end).toLowerCase();
-      
-      const isDob = DOB_KEYWORDS.some(keyword => context.includes(keyword));
-      if (isDob) {
-        dobs.add(dateString);
-      }
-    }
-  }
-  
-  return dobs;
-}
 const NAME_TITLES = /^(Mr\.?|Ms\.?|Mrs\.?|Dr\.?|Miss|Independent Director|Director|Prof\.?)\s+/i;
 
 function normalizeName(name) {
@@ -74,7 +47,30 @@ function normalizeName(name) {
 }
 
 /**
+ * Generator function that yields chunks of text up to a target size.
+ * Instead of splitting the entire document into an array of lines (which consumes
+ * memory proportional to the document size), it streams slice views by finding the next newline index.
+ * 
+ * @param {string} text - The input document text
+ * @param {number} targetSize - Target chunk size in characters
+ * @returns {Generator<string>} Yields text chunks
+ */
+function* yieldNLPChunks(text, targetSize = 8000) {
+  let start = 0;
+  while (start < text.length) {
+    let end = text.indexOf('\n', start + targetSize);
+    if (end === -1) {
+      end = text.length;
+    }
+    yield text.slice(start, end);
+    start = end + 1;
+  }
+}
+
+/**
  * Detects all structured and unstructured PII in the input text.
+ * Runs in chunks to keep memory usage low and prevent event-loop blocking.
+ * 
  * @param {string} text - The raw document text
  * @returns {Object} Grouped sets of unique PII values
  */
@@ -86,6 +82,7 @@ export function detectPII(text) {
     ssn: new Set(),
     pan: new Set(),
     gstin: new Set(),
+    passport: new Set(),
     phone: new Set(),
     dob: new Set(),
     name: new Set(),
@@ -93,31 +90,56 @@ export function detectPII(text) {
     address: new Set()
   };
 
-  // 1. Structured PII Detection (Regex)
-  for (const [key, regex] of Object.entries(REGEX_PATTERNS)) {
-    let match;
-    regex.lastIndex = 0;
-    while ((match = regex.exec(text)) !== null) {
-      // Avoid duplicate matching if it overlaps or is invalid
-      result[key].add(match[0].trim());
+  if (!text || typeof text !== 'string') {
+    return result;
+  }
+
+  // Pre-define stop words and title titles for company filtering
+  const TITLE_STOPWORDS = new Set([
+    'Chief', 'Director', 'Independent', 'Officer', 'Manager', 'President',
+    'Executive', 'Financial', 'Operating', 'Secretary'
+  ]);
+
+  // Scans context for Date of Birth (DOB) within a chunk
+  const detectChunkDOBs = (chunkText) => {
+    for (const regex of DATE_PATTERNS) {
+      let match;
+      regex.lastIndex = 0;
+      while ((match = regex.exec(chunkText)) !== null) {
+        const dateString = match[0];
+        const matchIndex = match.index;
+        
+        // Context window of 30 characters before and after
+        const start = Math.max(0, matchIndex - 30);
+        const end = Math.min(chunkText.length, matchIndex + dateString.length + 30);
+        const context = chunkText.slice(start, end).toLowerCase();
+        
+        const isDob = DOB_KEYWORDS.some(keyword => context.includes(keyword));
+        if (isDob) {
+          result.dob.add(dateString.trim());
+        }
+      }
     }
-  }
+  };
 
-  // 2. Context-aware DOB detection
-  const detectedDobs = detectDOBs(text);
-  for (const dob of detectedDobs) {
-    result.dob.add(dob.trim());
-  }
+  // Process text chunk-by-chunk (~8KB per chunk) to avoid heap limit crash
+  for (const chunk of yieldNLPChunks(text, 8000)) {
+    // 1. Structured PII Detection (Regexes)
+    for (const [key, regex] of Object.entries(REGEX_PATTERNS)) {
+      let match;
+      regex.lastIndex = 0;
+      while ((match = regex.exec(chunk)) !== null) {
+        result[key].add(match[0].trim());
+      }
+    }
 
-  // 3. Unstructured PII Detection (NLP using compromise in chunks to prevent memory blow-up / crashes)
-  const paragraphs = text.split(/\r?\n/);
-  let currentChunk = '';
-  const maxChunkSize = 8000; // ~8KB chunk size is ideal for compromise NLP memory and speed
+    // 2. DOB Detection
+    detectChunkDOBs(chunk);
 
-  const processNLPChunk = (chunkText) => {
-    const doc = nlp(chunkText);
+    // 3. Unstructured PII Detection (Compromise NLP)
+    const doc = nlp(chunk);
     
-    // Extract People Names
+    // Extract names
     doc.people().out('array').forEach(name => {
       const cleaned = normalizeName(name.trim());
       if (cleaned.length > 2 && !cleaned.includes('\n')) {
@@ -125,12 +147,7 @@ export function detectPII(text) {
       }
     });
 
-    // Extract Company/Organization Names
-    const TITLE_STOPWORDS = new Set([
-      'Chief', 'Director', 'Independent', 'Officer', 'Manager', 'President',
-      'Executive', 'Financial', 'Operating', 'Secretary'
-    ]);
-
+    // Extract companies
     doc.organizations().out('array').forEach(company => {
       const cleaned = company.trim();
       if (cleaned.length > 3 && !cleaned.includes('\n') && !TITLE_STOPWORDS.has(cleaned)) {
@@ -138,27 +155,13 @@ export function detectPII(text) {
       }
     });
 
-    // Extract Addresses/Places
+    // Extract places/addresses
     doc.places().out('array').forEach(place => {
       const cleaned = place.trim();
       if (cleaned.length > 3 && !cleaned.includes('\n')) {
         result.address.add(cleaned);
       }
     });
-  };
-
-  for (const para of paragraphs) {
-    if ((currentChunk.length + para.length) > maxChunkSize) {
-      if (currentChunk.trim().length > 0) {
-        processNLPChunk(currentChunk);
-      }
-      currentChunk = para;
-    } else {
-      currentChunk += (currentChunk.length > 0 ? '\n' : '') + para;
-    }
-  }
-  if (currentChunk.trim().length > 0) {
-    processNLPChunk(currentChunk);
   }
 
   return result;

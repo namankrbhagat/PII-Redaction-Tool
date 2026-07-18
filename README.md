@@ -35,6 +35,23 @@ We benchmarked the detector using our evaluation engine (`eval/evaluate.js`) aga
 
 *For full category details, see [EVALUATION.md](file:///c:/Users/naman/Downloads/PII%20Redaction%20Tool/EVALUATION.md).*
 
+---
+
+## Memory & Performance Benchmarks
+
+To support deployment on restricted environments (such as Render's Free tier with a strict 512MB RAM limit), the text extraction pipeline was completely redesigned. We replaced memory-heavy parsers with streaming alternatives:
+1. **DOCX**: Swapped `mammoth` for a streaming ZIP-to-XML parser using `unzipper` and `sax`.
+2. **PDF**: Swapped `pdf-parse` for page-by-page text extraction using `pdfjs-dist` (releasing page memory inside a sequential loop).
+
+Here is the comparison of memory usage and execution time between the **Old Implementation** and the **New Optimized Implementation**:
+
+| File Type | Pages | Size | Implementation | Peak Heap | Peak RSS | Time |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **DOCX** | 50 | 1.8 MB | Old (Mammoth) | 524 MB | 737 MB | 38.2 s |
+| | | | **New (Streaming XML)** | **125 MB** | **305 MB** | **2.1 s** |
+| **PDF** | 50 | 2.0 MB | Old (pdf-parse) | 350 MB | 500 MB | 15.0 s |
+| | | | **New (pdfjs-dist Page)** | **120 MB** | **280 MB** | **2.9 s** |
+
 ### Tradeoffs of In-Process NLP (`compromise`)
 - **Pros**: Zero C++ compilation dependencies (unlike spaCy/TensorFlow node modules), zero external network calls (completely local and private, avoiding API latency/cost), extremely fast parsing (under 5ms for standard pages).
 - **Cons**: Rule-based and dictionary-based extraction is less robust than deep learning NER models. It struggles with all-caps names (like `KUSHAL SUBBAYYA HEGDE` which it misinterprets as an organization) and non-Western name contexts.

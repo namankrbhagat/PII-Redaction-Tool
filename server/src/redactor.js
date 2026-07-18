@@ -6,17 +6,33 @@ function escapeRegExp(string) {
 }
 
 /**
+ * Deterministic hash function mapping string to a 32-bit positive integer seed.
+ * This guarantees the seed is stable across restarts for the same PII string.
+ * 
+ * @param {string} str - The PII string
+ * @returns {number} 32-bit positive integer hash
+ */
+function getStringSeed(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0; // Convert to 32bit integer
+  }
+  return Math.abs(hash);
+}
+
+/**
  * Generates a realistic fake alternative for a given PII value based on its type.
+ * Seeds faker deterministically to maintain consistency.
+ * 
  * @param {string} originalValue - The original PII string
  * @param {string} type - The category of PII (e.g. 'email', 'name', 'phone')
  * @returns {string} Realistic fake replacement
  */
 function generateFakeValue(originalValue, type) {
-  // Use a fixed seed based on the original value to make the replacement consistent
-  // but randomized across different runs. We can seed faker if we want, or just let faker handle it.
-  // We can seed faker with a hash of the original value for true mathematical determinism,
-  // but standard faker calls are fine since we use a lookup table per request.
-  
+  const seed = getStringSeed(originalValue);
+  faker.seed(seed);
+
   switch (type) {
     case 'email':
       return faker.internet.email();
@@ -25,18 +41,21 @@ function generateFakeValue(originalValue, type) {
     case 'creditCard':
       return faker.finance.creditCardNumber();
     case 'ssn':
-      return faker.helpers.replaceSymbolWithNumber('###-##-####');
+      // Safe replacement using the recommended string template regex
+      return '###-##-####'.replace(/#/g, () => faker.string.numeric());
     case 'pan':
       // Indian PAN: 5 uppercase letters, 4 digits, 1 uppercase letter
-      return faker.helpers.replaceSymbols('?????####?').toUpperCase();
+      return '?????####?'.replace(/\?/g, () => faker.string.alpha().toUpperCase()).replace(/#/g, () => faker.string.numeric());
     case 'gstin':
       // Indian GSTIN: 2 digits, 5 uppercase letters, 4 digits, 1 uppercase letter, 1 digit, 'Z', 1 alphanumeric
-      return faker.helpers.replaceSymbols('##?????####??Z?').toUpperCase();
+      const prefix = '##?????####?'.replace(/#/g, () => faker.string.numeric()).replace(/\?/g, () => faker.string.alpha().toUpperCase());
+      const suffix = '?Z?'.replace(/\?/g, () => faker.string.alphanumeric().toUpperCase());
+      return prefix + suffix;
     case 'phone':
       if (originalValue.includes('+91')) {
-        return faker.helpers.replaceSymbolWithNumber('+91 9########');
+        return '+91 9########'.replace(/#/g, () => faker.string.numeric());
       }
-      return faker.helpers.replaceSymbolWithNumber('+1 (###) ###-####');
+      return '+1 (###) ###-####'.replace(/#/g, () => faker.string.numeric());
     case 'dob':
       // Try to preserve original date format style
       const birthDate = faker.date.birthdate({ min: 18, max: 80, mode: 'age' });
@@ -53,21 +72,22 @@ function generateFakeValue(originalValue, type) {
     case 'address':
       return `${faker.location.streetAddress()}, ${faker.location.city()}, ${faker.location.state()} ${faker.location.zipCode()}`;
     case 'passport':
-      // Passport example: 1 letter followed by 7 digits
-      return faker.helpers.replaceSymbols('?#######').toUpperCase();
+      // Passport: 1 uppercase letter followed by 7 digits
+      return '?#######'.replace(/\?/g, () => faker.string.alpha().toUpperCase()).replace(/#/g, () => faker.string.numeric());
     default:
       return `[REDACTED_${type.toUpperCase()}]`;
   }
 }
 
 /**
- * Performs PII redaction on the text by replacing all detected entities with consistent fake data.
+ * Performs PII redaction on the text by replacing all detected entities.
+ * Optimizes memory by executing a single-pass global replace rather than O(N) iterative replacements.
+ * 
  * @param {string} text - The input plain text
  * @param {Object} detectedEntities - Grouped sets of unique PII values from detectPII
  * @returns {Object} { redactedText, lookupTable, stats }
  */
 export function redactText(text, detectedEntities) {
-  let redactedText = text;
   const lookupTable = {};
   const stats = {};
 
@@ -83,11 +103,19 @@ export function redactText(text, detectedEntities) {
     }
   }
 
+  if (flatMappings.length === 0) {
+    return {
+      redactedText: text,
+      lookupTable,
+      stats
+    };
+  }
+
   // Sort flatMappings by length of the original string in descending order.
-  // This is crucial to prevent partial replacements (e.g. replacing "John" in "John Doe" first).
+  // Crucial to prevent partial replacements (e.g. replacing "John" in "John Doe" first).
   flatMappings.sort((a, b) => b.original.length - a.original.length);
 
-  // First pass: Generate consistent fake values for each unique original value
+  // Generate consistent deterministic fake values for each unique original value
   for (const item of flatMappings) {
     if (!lookupTable[item.original]) {
       lookupTable[item.original] = {
@@ -97,17 +125,16 @@ export function redactText(text, detectedEntities) {
     }
   }
 
-  // Second pass: Perform search and replace in the text
-  // We recreate sorted keys list to make sure we replace in descending length order
+  // Build a single global regular expression containing all search terms as alternation (A|B|C|...)
+  // Sorted descending by length, which guarantees correct match order.
   const sortedOriginals = Object.keys(lookupTable).sort((a, b) => b.length - a.length);
+  const escapedPatterns = sortedOriginals.map(escapeRegExp);
+  const combinedRegex = new RegExp(escapedPatterns.join('|'), 'g');
 
-  for (const original of sortedOriginals) {
-    const fake = lookupTable[original].fake;
-    const escaped = escapeRegExp(original);
-    // Global replacement using regex
-    const regex = new RegExp(escaped, 'g');
-    redactedText = redactedText.replace(regex, fake);
-  }
+  // Single-pass replacement avoids O(N) intermediate string copying and potential memory limit crash
+  const redactedText = text.replace(combinedRegex, (match) => {
+    return lookupTable[match]?.fake || match;
+  });
 
   return {
     redactedText,
