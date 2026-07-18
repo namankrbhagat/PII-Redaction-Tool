@@ -193,6 +193,31 @@ app.use((err, req, res, next) => {
   });
 });
 
+// Health check route
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', message: 'PII Redactor Server is running' });
+});
+
+// Root route redirect to frontend or return health status to prevent "Cannot GET /"
+app.get('/', (req, res) => {
+  res.json({
+    status: 'OK',
+    message: 'Aegis Redact API Server is running. The frontend client is available at https://pii-redaction-tool-six.vercel.app',
+    endpoints: {
+      health: '/health',
+      redact: '/redact (POST)'
+    }
+  });
+});
+
+// GET route for /redact to handle direct browser visits gracefully
+app.get('/redact', (req, res) => {
+  res.status(405).json({
+    error: 'Method Not Allowed',
+    message: 'The /redact endpoint only accepts POST requests with a multipart/form-data payload containing a "file" field.'
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
