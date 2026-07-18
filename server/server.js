@@ -6,13 +6,27 @@ import { detectPII } from './src/detectors.js';
 import { redactText } from './src/redactor.js';
 import { generateDocx } from './src/generateDocx.js';
 
+// Handle uncaught exceptions and unhandled promise rejections to avoid process crashes
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Configure CORS and expose headers so the frontend can read filename and redaction metrics
+// Configure CORS dynamically based on incoming Origin header to avoid wildcard issues with exposed headers
 app.use(cors({
-  origin: '*',
-  exposedHeaders: ['Content-Disposition', 'X-Redaction-Stats']
+  origin: (origin, callback) => {
+    // Allow all origins (origin will be undefined for same-origin or tool requests like curl)
+    callback(null, true);
+  },
+  credentials: true,
+  exposedHeaders: ['Content-Disposition', 'X-Redaction-Stats'],
+  optionsSuccessStatus: 200 // Some legacy/mobile browsers choke on 204
 }));
 
 app.use(express.json());
@@ -26,7 +40,7 @@ const upload = multer({
 });
 
 // Primary Redaction Route
-app.post('/redact', upload.single('file'), async (req, res) => {
+app.post('/redact', upload.single('file'), async (req, res, next) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded. Please upload a PDF or DOCX file.' });
@@ -64,8 +78,7 @@ app.post('/redact', upload.single('file'), async (req, res) => {
     res.send(docxBuffer);
 
   } catch (error) {
-    console.error('Redaction error:', error);
-    res.status(500).json({ error: `Internal server error: ${error.message}` });
+    next(error);
   }
 });
 
@@ -74,6 +87,27 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'PII Redactor Server is running' });
 });
 
+// Global error handling middleware to ensure CORS headers are ALWAYS set, even on failure
+app.use((err, req, res, next) => {
+  console.error('API Error:', err);
+
+  // In Express, we must set these explicitly inside error handler to ensure they are present
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'File size limit exceeded. Maximum file size allowed is 15MB.' });
+    }
+    return res.status(400).json({ error: `File upload error: ${err.message}` });
+  }
+
+  res.status(err.status || 500).json({
+    error: err.message || 'An unexpected error occurred during processing.'
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
