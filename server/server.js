@@ -99,6 +99,15 @@ app.get('/', (req, res) => {
   });
 });
 
+// GET handler for /redact to handle direct browser visits and return a clear description
+app.get('/redact', (req, res) => {
+  res.status(405).json({
+    error: 'Method Not Allowed',
+    message: 'The /redact endpoint only accepts POST requests with a multipart/form-data payload containing a "file" field. To use this service, please visit the frontend client at https://pii-redaction-tool-six.vercel.app'
+  });
+});
+
+
 
 // Global error handling middleware to ensure CORS headers are ALWAYS set, even on failure
 app.use((err, req, res, next) => {
