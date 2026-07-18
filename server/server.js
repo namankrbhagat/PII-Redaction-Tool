@@ -87,6 +87,19 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'PII Redactor Server is running' });
 });
 
+// Root route to show server status and prevent "Cannot GET /" confusion
+app.get('/', (req, res) => {
+  res.json({
+    status: 'OK',
+    message: 'Aegis Redact API Server is running. The frontend is available at https://pii-redaction-tool-six.vercel.app',
+    endpoints: {
+      health: '/health',
+      redact: '/redact (POST)'
+    }
+  });
+});
+
+
 // Global error handling middleware to ensure CORS headers are ALWAYS set, even on failure
 app.use((err, req, res, next) => {
   console.error('API Error:', err);
