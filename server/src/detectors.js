@@ -109,37 +109,57 @@ export function detectPII(text) {
     result.dob.add(dob.trim());
   }
 
-  // 3. Unstructured PII Detection (NLP using compromise)
-  const doc = nlp(text);
-  
-  // Extract People Names
-  doc.people().out('array').forEach(name => {
-    const cleaned = normalizeName(name.trim());
-    if (cleaned.length > 2 && !cleaned.includes('\n')) {
-      result.name.add(cleaned);
-    }
-  });
+  // 3. Unstructured PII Detection (NLP using compromise in chunks to prevent memory blow-up / crashes)
+  const paragraphs = text.split(/\r?\n/);
+  let currentChunk = '';
+  const maxChunkSize = 8000; // ~8KB chunk size is ideal for compromise NLP memory and speed
 
-  // Extract Company/Organization Names
-  const TITLE_STOPWORDS = new Set([
-  'Chief', 'Director', 'Independent', 'Officer', 'Manager', 'President',
-  'Executive', 'Financial', 'Operating', 'Secretary'
-  ]);
+  const processNLPChunk = (chunkText) => {
+    const doc = nlp(chunkText);
+    
+    // Extract People Names
+    doc.people().out('array').forEach(name => {
+      const cleaned = normalizeName(name.trim());
+      if (cleaned.length > 2 && !cleaned.includes('\n')) {
+        result.name.add(cleaned);
+      }
+    });
 
-  doc.organizations().out('array').forEach(company => {
-    const cleaned = company.trim();
-    if (cleaned.length > 3 && !cleaned.includes('\n') && !TITLE_STOPWORDS.has(cleaned)) {
-      result.company.add(cleaned);
-    }
-  });
+    // Extract Company/Organization Names
+    const TITLE_STOPWORDS = new Set([
+      'Chief', 'Director', 'Independent', 'Officer', 'Manager', 'President',
+      'Executive', 'Financial', 'Operating', 'Secretary'
+    ]);
 
-  // Extract Addresses/Places
-  doc.places().out('array').forEach(place => {
-    const cleaned = place.trim();
-    if (cleaned.length > 3 && !cleaned.includes('\n')) {
-      result.address.add(cleaned);
+    doc.organizations().out('array').forEach(company => {
+      const cleaned = company.trim();
+      if (cleaned.length > 3 && !cleaned.includes('\n') && !TITLE_STOPWORDS.has(cleaned)) {
+        result.company.add(cleaned);
+      }
+    });
+
+    // Extract Addresses/Places
+    doc.places().out('array').forEach(place => {
+      const cleaned = place.trim();
+      if (cleaned.length > 3 && !cleaned.includes('\n')) {
+        result.address.add(cleaned);
+      }
+    });
+  };
+
+  for (const para of paragraphs) {
+    if ((currentChunk.length + para.length) > maxChunkSize) {
+      if (currentChunk.trim().length > 0) {
+        processNLPChunk(currentChunk);
+      }
+      currentChunk = para;
+    } else {
+      currentChunk += (currentChunk.length > 0 ? '\n' : '') + para;
     }
-  });
+  }
+  if (currentChunk.trim().length > 0) {
+    processNLPChunk(currentChunk);
+  }
 
   return result;
 }
