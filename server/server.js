@@ -35,7 +35,7 @@ app.use(cors({
 app.use((req, res, next) => {
   req.timedOut = false;
 
-  res.setTimeout(50000, () => {
+  res.setTimeout(25000, () => {
     if (!res.headersSent) {
       req.timedOut = true;
 
