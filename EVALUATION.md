@@ -20,10 +20,10 @@ The evaluation uses a custom dataset (`eval/ground_truth.json`) containing **19*
 ## Performance Summary
 
 ### Overall Metrics
-- **Precision**: 75.00%
+- **Precision**: 78.95%
 - **Recall**: 83.33%
-- **Accuracy**: 65.22%
-- **F1-Score**: 78.95%
+- **Accuracy**: 68.18%
+- **F1-Score**: 81.08%
 
 ### Category Breakdown Table
 
@@ -33,7 +33,7 @@ The evaluation uses a custom dataset (`eval/ground_truth.json`) containing **19*
 | email | 2 | 2 | 2 | 0 | 0 | 100.0% | 100.0% | 100.0% |
 | phone | 2 | 3 | 2 | 1 | 0 | 66.7% | 100.0% | 66.7% |
 | company | 1 | 3 | 1 | 2 | 0 | 33.3% | 100.0% | 33.3% |
-| address | 2 | 4 | 2 | 2 | 0 | 50.0% | 100.0% | 50.0% |
+| address | 2 | 3 | 2 | 1 | 0 | 66.7% | 100.0% | 66.7% |
 | ssn | 1 | 1 | 1 | 0 | 0 | 100.0% | 100.0% | 100.0% |
 | pan | 1 | 1 | 1 | 0 | 0 | 100.0% | 100.0% | 100.0% |
 | gstin | 1 | 1 | 1 | 0 | 0 | 100.0% | 100.0% | 100.0% |

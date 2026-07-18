@@ -18,16 +18,6 @@ process.on('unhandledRejection', (reason, promise) => {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Helper to log Node.js memory metrics stage-by-stage
-function logMemoryUsage(stage) {
-  const mem = process.memoryUsage();
-  console.log(
-    `[Memory - ${stage.padEnd(20)}] ` +
-    `Heap: ${(mem.heapUsed / 1024 / 1024).toFixed(2).padStart(6)} MB / ` +
-    `RSS: ${(mem.rss / 1024 / 1024).toFixed(2).padStart(6)} MB / ` +
-    `External: ${(mem.external / 1024 / 1024).toFixed(2).padStart(6)} MB`
-  );
-}
 
 // 1. Configure CORS dynamically based on request origin to ensure compatibility with credentials
 app.use(cors({
@@ -76,8 +66,6 @@ const upload = multer({
 
 // Primary Redaction Route
 app.post("/redact", upload.single("file"), async (req, res, next) => {
-  logMemoryUsage("Upload Start");
-
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -95,36 +83,21 @@ app.post("/redact", upload.single("file"), async (req, res, next) => {
       ).toFixed(2)} MB), Type: ${mimetype}`
     );
 
-    console.time("Extract");
     const rawText = await extractText(buffer, mimetype, originalname);
-    console.timeEnd("Extract");
 
     req.file.buffer = null;
-    logMemoryUsage("After Text Extract");
 
     if (req.timedOut || res.headersSent) return;
 
-    console.time("Detect");
     const detected = detectPII(rawText);
-    console.timeEnd("Detect");
-
-    logMemoryUsage("After PII Detection");
 
     if (req.timedOut || res.headersSent) return;
 
-    console.time("Redact");
     const { redactedText, stats } = redactText(rawText, detected);
-    console.timeEnd("Redact");
-
-    logMemoryUsage("After Redaction");
 
     if (req.timedOut || res.headersSent) return;
 
-    console.time("Generate DOCX");
     const docxBuffer = await generateDocx(redactedText);
-    console.timeEnd("Generate DOCX");
-
-    logMemoryUsage("After Docx Gen");
 
     if (req.timedOut || res.headersSent) return;
 
@@ -151,8 +124,6 @@ app.post("/redact", upload.single("file"), async (req, res, next) => {
     res.send(docxBuffer);
 
     console.log(`Successfully completed redaction of: ${originalname}`);
-
-    logMemoryUsage("Response Sent");
   } catch (err) {
     next(err);
   }
