@@ -43,15 +43,24 @@ app.use(cors({
 // 2. Request timeout protection (25 seconds)
 // Prevents Render reverse proxy from dropping connection at 30 seconds, which results in browser CORS errors.
 app.use((req, res, next) => {
+  req.timedOut = false;
+
   res.setTimeout(25000, () => {
     if (!res.headersSent) {
-      console.error(`Request timeout triggered at 25s for ${req.method} ${req.url}`);
+      req.timedOut = true;
+
+      console.error(
+        `Request timeout triggered at 25s for ${req.method} ${req.url}`
+      );
+
       res.status(503).json({
-        error: 'Service Unavailable',
-        message: 'Request timed out. The document is too large to process within the server timeout limits.'
+        error: "Service Unavailable",
+        message:
+          "Request timed out. The document is too large to process within the server timeout limits."
       });
     }
   });
+
   next();
 });
 
@@ -66,112 +75,121 @@ const upload = multer({
 });
 
 // Primary Redaction Route
-app.post('/redact', upload.single('file'), async (req, res, next) => {
-  logMemoryUsage('Upload Start');
+app.post("/redact", upload.single("file"), async (req, res, next) => {
+  logMemoryUsage("Upload Start");
 
   try {
-    // Input Validation
     if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded. Please upload a PDF or DOCX file.' });
+      return res.status(400).json({
+        error: "No file uploaded."
+      });
     }
 
     const { buffer, mimetype, originalname } = req.file;
 
-    // Validate file extensions
-    const fileExt = originalname.toLowerCase().substring(originalname.lastIndexOf('.'));
-    if (fileExt !== '.pdf' && fileExt !== '.docx') {
-      return res.status(400).json({ error: 'Invalid file format. Only PDF and DOCX files are supported.' });
-    }
+    console.log(
+      `Processing file: ${originalname} (${(
+        buffer.length /
+        1024 /
+        1024
+      ).toFixed(2)} MB), Type: ${mimetype}`
+    );
 
-    console.log(`Processing file: ${originalname} (${(buffer.length / 1024 / 1024).toFixed(2)} MB), Type: ${mimetype}`);
-
-    // Step 1: Extract Text from Document
+    console.time("Extract");
     const rawText = await extractText(buffer, mimetype, originalname);
-    
-    // Proactively release buffer reference to let GC free memory immediately
+    console.timeEnd("Extract");
+
     req.file.buffer = null;
-    logMemoryUsage('After Text Extract');
+    logMemoryUsage("After Text Extract");
 
-    if (!rawText || rawText.trim().length === 0) {
-      return res.status(422).json({ error: 'Failed to extract text from the document. The file might be empty, password protected, or unreadable.' });
-    }
+    if (req.timedOut || res.headersSent) return;
 
-    // Step 2: Detect PII
+    console.time("Detect");
     const detected = detectPII(rawText);
-    logMemoryUsage('After PII Detection');
+    console.timeEnd("Detect");
 
-    // Step 3: Redact and Replace with deterministic fakes
+    logMemoryUsage("After PII Detection");
+
+    if (req.timedOut || res.headersSent) return;
+
+    console.time("Redact");
     const { redactedText, stats } = redactText(rawText, detected);
-    logMemoryUsage('After Redaction');
+    console.timeEnd("Redact");
 
-    // Step 4: Generate output .docx file
+    logMemoryUsage("After Redaction");
+
+    if (req.timedOut || res.headersSent) return;
+
+    console.time("Generate DOCX");
     const docxBuffer = await generateDocx(redactedText);
-    logMemoryUsage('After Docx Gen');
+    console.timeEnd("Generate DOCX");
 
-    // Prepare filename for download
-    const nameWithoutExt = originalname.substring(0, originalname.lastIndexOf('.')) || originalname;
+    logMemoryUsage("After Docx Gen");
+
+    if (req.timedOut || res.headersSent) return;
+
+    const nameWithoutExt =
+      originalname.substring(0, originalname.lastIndexOf(".")) ||
+      originalname;
+
     const safeOutputName = `redacted_${nameWithoutExt}.docx`;
 
-    // Attach redaction stats in response headers (base64 encoded JSON)
-    const statsJson = JSON.stringify(stats);
-    const statsBase64 = Buffer.from(statsJson).toString('base64');
-    res.setHeader('X-Redaction-Stats', statsBase64);
+    const statsBase64 = Buffer.from(JSON.stringify(stats)).toString("base64");
 
-    // Send docx as binary file
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeOutputName)}"`);
-    
+    res.setHeader("X-Redaction-Stats", statsBase64);
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${encodeURIComponent(safeOutputName)}"`
+    );
+
     res.send(docxBuffer);
+
     console.log(`Successfully completed redaction of: ${originalname}`);
-    logMemoryUsage('Response Sent');
 
-  } catch (error) {
-    next(error);
+    logMemoryUsage("Response Sent");
+  } catch (err) {
+    next(err);
   }
-});
-
-// Health check route
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', message: 'PII Redactor Server is running' });
-});
-
-// Root route redirect to frontend or return health status to prevent "Cannot GET /"
-app.get('/', (req, res) => {
-  res.json({
-    status: 'OK',
-    message: 'Aegis Redact API Server is running. The frontend client is available at https://pii-redaction-tool-six.vercel.app',
-    endpoints: {
-      health: '/health',
-      redact: '/redact (POST)'
-    }
-  });
-});
-
-// GET route for /redact to handle direct browser visits gracefully
-app.get('/redact', (req, res) => {
-  res.status(405).json({
-    error: 'Method Not Allowed',
-    message: 'The /redact endpoint only accepts POST requests with a multipart/form-data payload containing a "file" field.'
-  });
 });
 
 // Production-ready global error handling middleware
 app.use((err, req, res, next) => {
-  console.error('API Error Encountered:', err);
+  console.error("API Error Encountered:", err);
 
-  // In Express, we must set these explicitly inside error handler to ensure they are present in cross-origin responses
-  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  res.setHeader(
+    "Access-Control-Allow-Origin",
+    req.headers.origin || "*"
+  );
+
+  res.setHeader(
+    "Access-Control-Allow-Credentials",
+    "true"
+  );
 
   if (err instanceof multer.MulterError) {
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'File size limit exceeded. Maximum file size allowed is 15MB.' });
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({
+        error: "File size limit exceeded. Maximum file size allowed is 15MB."
+      });
     }
-    return res.status(400).json({ error: `File upload error: ${err.message}` });
+
+    return res.status(400).json({
+      error: `File upload error: ${err.message}`
+    });
   }
 
   res.status(err.status || 500).json({
-    error: err.message || 'An unexpected error occurred during processing.'
+    error: err.message || "An unexpected error occurred during processing."
   });
 });
 
